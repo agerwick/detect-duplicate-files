@@ -1,0 +1,275 @@
+#!/usr/bin/python
+import glob
+import array
+import os
+import sys
+#import time
+from optparse import OptionParser
+from stat import *
+import subprocess #check_output was introduced in 2.7, and would be preferable, but for compatibility reasons we'll use Popen
+def check_output(command):
+  return subprocess.Popen(command, stdout=subprocess.PIPE).communicate()[0]
+
+parser = OptionParser()
+parser.add_option("-v", "--verbose", action="store_true", dest="verbose", default=True, help="print status messages to stdout (DEFAULT)")
+parser.add_option("-V", "--very-verbose", action="store_true", dest="veryverbose", default=False, help="print every filename to stdout")
+parser.add_option("-q", "--quiet", action="store_false", dest="verbose", default=True, help="don't print status messages to stdout")
+parser.add_option("-R", "-r", "--recursive", action="store_true", dest="recursive", default=False, help="search recursively (include files in subdirectories)")
+parser.add_option("--max-depth", dest="maxdepth", type="int", default=None, help="if searching recursively, only descend N levels deep", metavar="N")
+parser.add_option("-m", "--mount", action="store_true", dest="mount", default=False, help="search mounted file systems in the path")
+parser.add_option("--keep-as-is", action="store_true", default=False, help="keep the first file given on the command line when two files are the same (default)")
+parser.add_option("--keep-oldest", action="store_true", default=False, help="keep the oldest file when two files are the same")
+parser.add_option("--keep-newest", action="store_true", default=False, help="keep the newest file when two files are the same")
+parser.add_option("--keep-first", action="store_true", default=False, help="keep the first file (sorted by path and file name) when two files are the same")
+parser.add_option("--keep-last", action="store_true", default=False, help="keep the last file (sorted by path and file name) when two files are the same")
+parser.add_option("-l", "--list", action="store_true", default=False, help="Display a list of duplicates and which files they are duplicates of (default)")
+parser.add_option("-L", "--list1", action="store_true", default=False, help="Display a list of as above, but each duplicate on a separate line (if a file has many duplicates)")
+parser.add_option("--rm", action="store_true", default=False, help="Display a set of rm commands:                          rm {duplicate} # duplicate of {original}")
+parser.add_option("--RM", action="store_true", default=False, help="Display a set of rm commands:                          rm {original} # duplicate(s): {duplicate(s)}")
+parser.add_option("--mv", type="string", default=None, help="Display a set of mv commands:                           mv {duplicate} {dest} # duplicate of {original}", metavar="{dest}")
+parser.add_option("--MV", type="string", default=None, help="Display a set of mv commands:                           mv {original} {dest} # duplicate(s): {duplicate(s)}", metavar="{dest}")
+parser.add_option("--no-comment", dest="add_comment", action="store_false", default=True, help="omits the comment on --rm, --RM, --mv or --MV")
+parser.add_option("--c1", type="string", default=None, help="Custom command: {1} {duplicate} {2}", metavar="{1}")
+parser.add_option("--c2", type="string", default=None, help="Custom command: {1} {duplicate} {2}", metavar="{2}")
+parser.add_option("--C1", type="string", default=None, help="Custom command: {1} {original} {2}", metavar="{1}")
+parser.add_option("--C2", type="string", default=None, help="Custom command: {1} {original} {2}", metavar="{2}")
+parser.add_option("--cc1", type="string", default=None, help="Custom command: {1} {duplicate} {2} {original} {3}", metavar="{1}")
+parser.add_option("--cc2", type="string", default=None, help="Custom command: {1} {duplicate} {2} {original} {3}", metavar="{2}")
+parser.add_option("--cc3", type="string", default=None, help="Custom command: {1} {duplicate} {2} {original} {3}", metavar="{3}")
+parser.add_option("--CC1", type="string", default=None, help="Custom command: {1} {original} {2} {duplicate} {3}", metavar="{1}")
+parser.add_option("--CC2", type="string", default=None, help="Custom command: {1} {original} {2} {duplicate} {3}", metavar="{2}")
+parser.add_option("--CC3", type="string", default=None, help="Custom command: {1} {original} {2} {duplicate} {3}", metavar="{3}")
+
+
+(options, filespecs) = parser.parse_args()
+if options.recursive == False:
+  options.maxdepth = 0
+if options.veryverbose:
+  options.verbose = True
+if options.keep_oldest:
+  options.sort = "oldest"
+elif options.keep_newest:
+  options.sort = "newest"
+elif options.keep_first:
+  options.sort = "first"
+elif options.keep_last:
+  options.sort = "last"
+else:
+  options.sort = "asis"
+
+# default to all files in current directory if no argument given - analogous to "du"
+if len(filespecs) == 0:
+  filespecs = "*"
+
+def walktree(root, filespec, callback, maxdepth=None, depth=0):
+  '''recursively descend the directory tree from root, 
+  calling the callback function for each regular file matching the filespec'''
+
+  if len(root) > 0 and root[-1] != "/":
+    root += "/"
+  if len(filespec) == 0:
+    filespec += "*"
+
+  # process files in this dir
+  for filename in glob.iglob(root + filespec):
+    if os.path.isfile(filename):
+      callback(filename)
+
+  # find directories to descent into
+  if depth < maxdepth or maxdepth == None:
+    for dirname in glob.iglob(root + "*"):
+      if os.path.isdir(dirname):
+        if not os.path.ismount(dirname) or options.mount: # don't descend into mount points unless mount option is on
+          walktree(dirname, filespec, callback, maxdepth, depth + 1)
+
+
+num_files = 0
+files = []
+def add_to_files(filename):
+  global num_files
+  global files
+  files.append({"name": filename, "size": os.path.getsize(filename)})
+  num_files += 1
+
+
+progress_info_last_len = 0
+def progress_info(current, total):
+  global progress_info_last_len
+  # backspace, overwrite with spaces, then bacspace again
+  s = "\b" * progress_info_last_len + " " * progress_info_last_len + "\b" * progress_info_last_len
+  if isinstance(current,int) and isinstance(total,int):
+    new_s = str(current) + "/" + str(total)
+    progress_info_last_len = len(new_s)
+    s += new_s
+  elif current == None and total == None and progress_info_last_len > 0:
+    s += "\n" # end of progress info - go to next line
+    progress_info_last_len = 0
+  elif current == "" and total == "" and progress_info_last_len > 0:
+    s += "" # just return without printing anything - cursor is back to the position it was in before
+    progress_info_last_len = 0
+  return s
+
+
+
+# fill the files array with files from all given filespecs
+for dir_filespec in filespecs:
+  num_files = 0 # this var is set by add_to_files()
+  if os.path.isdir(dir_filespec):
+    # path/to/a/dir
+    rootdir = dir_filespec
+    filespec = "*"
+  else:
+    # path/to/a/dir/*.txt
+    lastslash = dir_filespec.rfind("/") + 1
+    rootdir = dir_filespec[:lastslash]
+    filespec = dir_filespec[lastslash:]
+  if options.verbose:
+    print "Searching", 
+    if options.recursive:
+      if options.maxdepth == None:
+        print "recursively",
+      else:
+        print "recursively, down to", options.maxdepth, "level," if options.maxdepth == 1 else "levels,",
+    print "for", filespec,
+    if len(rootdir) > 0:
+      print "in", rootdir,
+  walktree(rootdir, filespec, add_to_files, options.maxdepth)
+  if options.verbose:
+    txt = "- " + str(num_files) + " file"
+    if num_files != 1:
+      txt += "s"
+    print txt + "."
+
+
+if options.sort == "first" or options.sort == "last":
+  if options.veryverbose:
+    print "Sorting by path and filename...",
+  files = sorted(files, key=lambda file: ("0" if file["name"].count("/") == 0 else "1") + "/" + file["name"]) # sort by path and filename. The count thing is for sorting files in root before subdirs
+  if options.sort == "last":
+    files.reverse()
+  if options.veryverbose:
+    print progress_info("", "")
+elif options.sort == "oldest" or options.sort == "newest":
+  if options.verbose:
+    print "Sorting by last modification time...",
+  for file_num, file in enumerate(files):
+    if options.verbose:
+      sys.stdout.write(progress_info(file_num + 1, len(files)))
+    files[file_num]["time"] = os.path.getmtime(file["name"])
+  files = sorted(files, key=lambda file: file["time"])
+  if options.sort == "newest":
+    files.reverse()
+  if options.verbose:
+    print progress_info("", "")
+    
+
+# remove duplicates, symlinks, and files with same inode as other files in the list
+removed_duplicates = 0
+removed_same_inode = 0
+removed_symlink = 0
+
+# duplicates first, otherwise statistics looks weird (duplicate symlinks are removed before duplicate entries)
+if options.veryverbose:
+  print "removing duplicates..."
+for file_num, file in enumerate(files):
+  if options.veryverbose:
+    sys.stdout.write(progress_info(file_num + 1, len(files)))
+  for other_file in files[file_num + 1:]:
+    if file["name"] == other_file["name"]:
+      if options.veryverbose:
+        print progress_info("", "") + "Removing", files.index(other_file, file_num + 1), other_file["name"], "(duplicate to", file_num, file["name"] + ")"
+      removed_duplicates += 1
+      del files[files.index(other_file, file_num + 1)] # second param is start position - this deletes the second occurrance, not the first - this is to make sure we don't mess up the loop.
+if options.veryverbose:
+  sys.stdout.write(progress_info("", "")) #remove progress status
+
+# now symlinks and ientical inodes
+if options.veryverbose:
+  print "removing symlinks and files linked to the same inode..."
+for file_num, file in enumerate(files):
+  if options.veryverbose:
+    sys.stdout.write(progress_info(file_num + 1, len(files)))
+  # remove it right away if it's a symlink
+  if os.path.islink(file["name"]):
+    if options.veryverbose:
+      print progress_info("", "") + "Removing", files.index(file), file["name"], "(symbolic link)"
+    removed_symlink += 1
+    del files[files.index(file)]
+
+  for other_file in files[file_num + 1:]:
+    remove_this = False
+    if os.path.islink(other_file["name"]):
+      if options.veryverbose:
+        print progress_info("", "") + "Removing", files.index(other_file), other_file["name"], "(symbolic link)"
+      removed_symlink += 1
+      remove_this = True
+    elif os.path.samefile(file["name"], other_file["name"]):
+      if options.veryverbose:
+        print progress_info("", "") + "Removing", files.index(other_file), other_file["name"], "(same file as", file_num, file["name"] + ")"
+      removed_same_inode += 1
+      remove_this = True
+    if remove_this:
+      del files[files.index(other_file)]
+if options.veryverbose:
+  sys.stdout.write(progress_info("", "")) # remove progress info
+if options.verbose:
+  if removed_duplicates > 0:
+    print "Removed", removed_duplicates, "duplicates from list."
+  if removed_same_inode > 0:
+    print "Removed", removed_symlink, "symbolic links."
+  if removed_same_inode > 0:
+    print "Removed", removed_same_inode, "files linking to the same inode as another file."
+
+if options.verbose:
+  print "Total number of files:", len(files), "files."
+  
+# find files with same size
+if options.verbose:
+  print "finding files with the same size...",
+same_size = {}
+for file_num, file in enumerate(files):
+  if options.veryverbose:
+    sys.stdout.write(progress_info(file_num + 1, len(files)))
+  for other_file_num, other_file in enumerate(files[file_num + 1:]):
+    if file["size"] == other_file["size"]:
+      same_size[file_num] = same_size.get(file_num, []) + [file_num + 1 + other_file_num]
+if options.veryverbose:
+  sys.stdout.write(progress_info("", "")) # remove satus, but do not move to next line
+if options.verbose:
+  print len(same_size), "files"
+
+# check the sha256 checksum of files with the same size
+if options.verbose:
+  print "Compiling checksums..."
+same_checksum = {}
+list_of_duplicates = [] # contains all files that have been detected as duplicates of another
+for num, other_nums in same_size.iteritems():
+  if options.verbose:
+    sys.stdout.write(progress_info(num + 1, len(same_size)))
+  file_checksum = check_output(["sha256sum", files[num]["name"]])
+  file_checksum = file_checksum[0:file_checksum.index(" ")]
+  for other_num in other_nums:
+    other_file_checksum = check_output(["sha256sum", files[other_num]["name"]])
+    other_file_checksum = other_file_checksum[0:other_file_checksum.index(" ")]
+    if options.veryverbose:
+      print progress_info("", "") + "Comparing", files[num]["name"], "to", files[other_num]["name"], "-->",
+      if file_checksum == other_file_checksum:
+        if other_num not in list_of_duplicates:
+          print "DUPLICATE - added to list"
+        else:
+          print "duplicate - but already added to list"
+      else:
+        print "Files are different"
+    if file_checksum == other_file_checksum and other_num not in list_of_duplicates:
+      same_checksum[num] = same_checksum.get(num, []) + [other_num]
+      list_of_duplicates += [other_num]
+if options.verbose:
+  print progress_info("", "") # move to next line, if needed.
+
+same_checksum = sorted(same_checksum, key=lambda file: ("0" if files[file[0]]["name"].count("/") == 0 else "1") + "/" + files[file[0]]["name"]) # sort by path and filename, files in rootdir first
+
+for num, other_nums in same_checksum.iteritems():
+  for other_num in other_nums:
+    print files[other_num]["name"],
+  if options.verbose:
+    print "# identical to", files[num]["name"]
