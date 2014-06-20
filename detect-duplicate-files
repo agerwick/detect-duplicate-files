@@ -24,21 +24,22 @@ parser.add_option("--keep-first", action="store_true", default=False, help="keep
 parser.add_option("--keep-last", action="store_true", default=False, help="keep the last file (sorted by path and file name) when two files are the same")
 parser.add_option("-l", "--list", action="store_true", default=False, help="Display a list of duplicates and which files they are duplicates of (default)")
 parser.add_option("-L", "--list1", action="store_true", default=False, help="Display a list of as above, but each duplicate on a separate line (if a file has many duplicates)")
-parser.add_option("--rm", action="store_true", default=False, help="Display a set of rm commands:                          rm {duplicate} # duplicate of {original}")
-parser.add_option("--RM", action="store_true", default=False, help="Display a set of rm commands:                          rm {original} # duplicate(s): {duplicate(s)}")
-parser.add_option("--mv", type="string", default=None, help="Display a set of mv commands:                           mv {duplicate} {dest} # duplicate of {original}", metavar="{dest}")
-parser.add_option("--MV", type="string", default=None, help="Display a set of mv commands:                           mv {original} {dest} # duplicate(s): {duplicate(s)}", metavar="{dest}")
+parser.add_option("--rm", action="store_true", default=False, help="Print a set of rm commands:                            rm {duplicate} # duplicate of {original}")
+parser.add_option("--RM", action="store_true", default=False, help="Print a set of rm commands:                            rm {original} # duplicate(s): {duplicate(s)}")
+parser.add_option("--mv", type="string", default=None, help="Print a set of mv commands:                             mv {duplicate} {dest} # duplicate of {original}", metavar="{dest}")
+parser.add_option("--MV", type="string", default=None, help="Print a set of mv commands:                             mv {original} {dest} # duplicate(s): {duplicate(s)}", metavar="{dest}")
 parser.add_option("--no-comment", dest="add_comment", action="store_false", default=True, help="omits the comment on --rm, --RM, --mv or --MV")
-parser.add_option("--c1", type="string", default=None, help="Custom command: {1} {duplicate} {2}", metavar="{1}")
-parser.add_option("--c2", type="string", default=None, help="Custom command: {1} {duplicate} {2}", metavar="{2}")
-parser.add_option("--C1", type="string", default=None, help="Custom command: {1} {original} {2}", metavar="{1}")
-parser.add_option("--C2", type="string", default=None, help="Custom command: {1} {original} {2}", metavar="{2}")
-parser.add_option("--cc1", type="string", default=None, help="Custom command: {1} {duplicate} {2} {original} {3}", metavar="{1}")
-parser.add_option("--cc2", type="string", default=None, help="Custom command: {1} {duplicate} {2} {original} {3}", metavar="{2}")
-parser.add_option("--cc3", type="string", default=None, help="Custom command: {1} {duplicate} {2} {original} {3}", metavar="{3}")
-parser.add_option("--CC1", type="string", default=None, help="Custom command: {1} {original} {2} {duplicate} {3}", metavar="{1}")
-parser.add_option("--CC2", type="string", default=None, help="Custom command: {1} {original} {2} {duplicate} {3}", metavar="{2}")
-parser.add_option("--CC3", type="string", default=None, help="Custom command: {1} {original} {2} {duplicate} {3}", metavar="{3}")
+parser.add_option("-1", "--each-file", action="store_true", default=False, help="Print each duplicate on a separate line on --list, --rm or --mv")
+parser.add_option("--c1", type="string", default="", help="Custom command: {1} {duplicate} {2}", metavar="{1}")
+parser.add_option("--c2", type="string", default="", help="Custom command: {1} {duplicate} {2}", metavar="{2}")
+parser.add_option("--C1", type="string", default="", help="Custom command: {1} {original} {2}", metavar="{1}")
+parser.add_option("--C2", type="string", default="", help="Custom command: {1} {original} {2}", metavar="{2}")
+parser.add_option("--cc1", type="string", default="", help="Custom command: {1} {duplicate} {2} {original} {3}", metavar="{1}")
+parser.add_option("--cc2", type="string", default="", help="Custom command: {1} {duplicate} {2} {original} {3}", metavar="{2}")
+parser.add_option("--cc3", type="string", default="", help="Custom command: {1} {duplicate} {2} {original} {3}", metavar="{3}")
+parser.add_option("--CC1", type="string", default="", help="Custom command: {1} {original} {2} {duplicate} {3}", metavar="{1}")
+parser.add_option("--CC2", type="string", default="", help="Custom command: {1} {original} {2} {duplicate} {3}", metavar="{2}")
+parser.add_option("--CC3", type="string", default="", help="Custom command: {1} {original} {2} {duplicate} {3}", metavar="{3}")
 
 
 (options, filespecs) = parser.parse_args()
@@ -56,6 +57,15 @@ elif options.keep_last:
   options.sort = "last"
 else:
   options.sort = "asis"
+
+options.c = True if options.c1 or options.c2 else False
+options.C = True if options.C1 or options.C2 else False
+options.cc = True if options.cc1 or options.cc2 or options.cc3 else False
+options.CC = True if options.CC1 or options.CC2 or options.CC3 else False
+
+# set default action
+if not options.list and not options.list1 and not options.rm and not options.RM and not options.mv and not options.MV and not options.c and not options.C and not options.cc and not options.CC:
+  options.list = True
 
 # default to all files in current directory if no argument given - analogous to "du"
 if len(filespecs) == 0:
@@ -245,7 +255,7 @@ same_checksum = {}
 list_of_duplicates = [] # contains all files that have been detected as duplicates of another
 for num, other_nums in same_size.iteritems():
   if options.verbose:
-    sys.stdout.write(progress_info(num + 1, len(same_size)))
+    sys.stdout.write(progress_info(num, len(same_size)))
   file_checksum = check_output(["sha256sum", files[num]["name"]])
   file_checksum = file_checksum[0:file_checksum.index(" ")]
   for other_num in other_nums:
@@ -263,13 +273,112 @@ for num, other_nums in same_size.iteritems():
     if file_checksum == other_file_checksum and other_num not in list_of_duplicates:
       same_checksum[num] = same_checksum.get(num, []) + [other_num]
       list_of_duplicates += [other_num]
+
+sorted_dups = sorted(same_checksum, key=lambda file: ("0" if files[file]["name"].count("/") == 0 else "1") + "/" + files[file]["name"]) # sort by path and filename, files in rootdir first
+
 if options.verbose:
-  print progress_info("", "") # move to next line, if needed.
+  print progress_info("", "") # clear status
+  print "Found", len(sorted_dups), "file(s) with duplicates."
 
-same_checksum = sorted(same_checksum, key=lambda file: ("0" if files[file[0]]["name"].count("/") == 0 else "1") + "/" + files[file[0]]["name"]) # sort by path and filename, files in rootdir first
+if len(sorted_dups) == 0:
+  exit(0)
 
-for num, other_nums in same_checksum.iteritems():
-  for other_num in other_nums:
-    print files[other_num]["name"],
+# --------------------------------------------------------------------------------------------------------
+# printing output
+
+
+if options.list:
+  if options.each_file:
+    if options.verbose:
+      print "\n# list of duplicates and which files they are duplicates of (one duplicate per line):"
+    for num in sorted_dups:
+      other_nums = same_checksum[num]
+      for other_num in other_nums:
+        print "#", files[other_num]["name"], "(identical to", files[num]["name"] + ")"
+  else:
+    if options.verbose:
+      print "\n# list of duplicates and which files they are duplicates of:"
+    for num in sorted_dups:
+      other_nums = same_checksum[num]
+      print "#",
+      for other_num in other_nums:
+        print files[other_num]["name"],
+      print "( identical to", files[num]["name"] + ")"
+
+if options.rm:
+  if options.each_file:
+    if options.verbose:
+      print "\n# rm {duplicate}  # duplicate of {original}  (one duplicate per line):"
+    for num in sorted_dups:
+      other_nums = same_checksum[num]
+      for other_num in other_nums:
+        print "rm", files[other_num]["name"], 
+        if options.add_comment:
+          print " # duplicate of", files[num]["name"]
+        else:
+          print
+  else:
+    if options.verbose:
+      print "\n# rm {duplicate(s)}  # duplicate of {original}:"
+    for num in sorted_dups:
+      other_nums = same_checksum[num]
+      print "rm",
+      for other_num in other_nums:
+        print files[other_num]["name"],
+      if options.add_comment:
+        print " # duplicate of", files[num]["name"]
+      else:
+        print
+
+if options.RM:
   if options.verbose:
-    print "# identical to", files[num]["name"]
+    print "\n# rm {original}  # duplicate(s): {duplicate(s)}:"
+  for num in sorted_dups:
+    other_nums = same_checksum[num]
+    print "rm", files[num]["name"], 
+    if options.add_comment:
+      print" # duplicate(s):",
+      for other_num in other_nums:
+        print files[other_num]["name"],
+    print
+
+if options.mv:
+  if options.each_file:
+    if options.verbose:
+      print "\n# mv {duplicate} {dest}",
+      if options.add_comment:
+        print " # duplicate of {original}  (one duplicate per line):",
+      print
+    for num in sorted_dups:
+      other_nums = same_checksum[num]
+      for other_num in other_nums:
+        print "rm", files[other_num]["name"],
+        if options.add_comment:
+          print " # duplicate of", files[num]["name"]
+        else:
+          print
+  else:
+    if options.verbose:
+      print "\n# rm {duplicate(s)}  # duplicate of {original}:"
+    for num in sorted_dups:
+      other_nums = same_checksum[num]
+      print "rm",
+      for other_num in other_nums:
+        print files[other_num]["name"],
+      if options.add_comment:
+        print " # duplicate of", files[num]["name"]
+      else:
+        print
+
+if options.RM:
+  if options.verbose:
+    print "\n# rm {original}  # duplicate(s): {duplicate(s)}:"
+  for num in sorted_dups:
+    other_nums = same_checksum[num]
+    print "rm", files[num]["name"],
+    if options.add_comment:
+      print" # duplicate(s):",
+      for other_num in other_nums:
+        print files[other_num]["name"],
+    print
+
