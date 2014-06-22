@@ -246,10 +246,10 @@ for file_num, file in enumerate(files):
 if options.veryverbose:
   sys.stdout.write(progress_info("", "")) # remove satus, but do not move to next line
 if options.verbose:
-  print len(same_size), "files"
+  print len(same_size), "file(s)"
 
 # check the sha256 checksum of files with the same size
-if options.verbose:
+if options.verbose and len(same_size) > 0:
   print "Compiling checksums..."
 same_checksum = {}
 list_of_duplicates = [] # contains all files that have been detected as duplicates of another
